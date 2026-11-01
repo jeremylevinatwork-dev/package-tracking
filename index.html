@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-build="pkg-20261101-0711">
+<html lang="en" data-build="pkg-20261101-0720">
 <head>
 <meta charset="UTF-8">
 <meta name="mobile-web-app-capable" content="yes">
@@ -827,22 +827,23 @@ window.useManualScan = ()=>{
   stopScanTracks(); handleScanLookup(v);
 };
 function startScanCamera(){
-  const msg=document.getElementById("scanmsg");
+  const msg=scanBox().querySelector("#scanmsg");
   scanDetector=makeDetector();
   if(!scanDetector){ if(msg) msg.textContent="Scanner unavailable in this browser."; return; }
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ if(msg) msg.textContent="Camera not available here."; return; }
   navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}}).then(st=>{
-    scanStream=st; const v=document.getElementById("scanvideo");
+    scanStream=st; const v=scanBox().querySelector("#scanvideo");
     if(!v){ stopScanTracks(); return; }
-    v.srcObject=st; v.play(); scanning=true;
-    const b=document.getElementById("scanstartbtn"); if(b) b.textContent="Stop";
-    if(msg) msg.textContent="Point at the barcode — fill the white box and hold steady…";
+    v.srcObject=st; try{ v.play(); }catch(e){}
+    scanning=true;
+    const b=scanBox().querySelector("#scanstartbtn"); if(b) b.textContent="Stop";
+    const m2=scanBox().querySelector("#scanmsg"); if(m2) m2.textContent="Point at the barcode — fill the white box and hold steady…";
     scanTick();
-  }).catch(()=>{ const m=document.getElementById("scanmsg"); if(m) m.innerHTML="Camera blocked or unavailable. If you opened this link inside another app, open it directly in Safari or Edge and allow camera access, or use the photo option below."; });
+  }).catch(()=>{ const m=scanBox().querySelector("#scanmsg"); if(m) m.innerHTML="Camera blocked or unavailable. If you opened this link inside another app, open it directly in Safari or Edge and allow camera access, or use the photo option below."; });
 }
 function scanTick(){
   if(!scanning) return;
-  const v=document.getElementById("scanvideo");
+  const v=scanBox().querySelector("#scanvideo");
   const run=()=>{ scanRAF=requestAnimationFrame(scanTick); };
   if(v&&v.readyState===v.HAVE_ENOUGH_DATA&&scanDetector){
     scanDetector.detect(v).then(res=>{
@@ -1161,7 +1162,8 @@ window.openScanner = targetId=>{
   if("BarcodeDetector" in window){ startScanCamera(); } else { startFallbackLive(); }
 };
 window.useSheetManual=()=>{
-  const v=document.getElementById("scanmanual").value.trim();
+  const inp=scanBox().querySelector("#scanmanual");
+  const v=inp?inp.value.trim():"";
   if(!v){ alert("Type the tracking number first."); return; }
   onScanResult(v);
 };
