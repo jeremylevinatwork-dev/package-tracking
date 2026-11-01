@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-build="pkg-20261028-1610">
+<html lang="en" data-build="pkg-20261101-0711">
 <head>
 <meta charset="UTF-8">
 <meta name="mobile-web-app-capable" content="yes">
@@ -696,15 +696,15 @@ function makeDetector(){
 }
 function renderScan(){
   const supported = ("BarcodeDetector" in window);
-  let h = '<h2 class="sec" style="margin-top:2px">Scan barcode</h2>'
+  let h = '<h2 class="sec" style="margin-top:2px">Scan a package</h2>'
     +'<div class="card"><div id="scanwrap"><video id="scanvideo" playsinline muted></video><div class="vfframe"></div></div><div id="scanstat" class="note" style="margin-top:4px;font-size:12px;color:#8a8f98"></div>'
     +'<canvas id="scancv" style="display:none"></canvas>'
-    +'<div id="scanmsg" class="note">Tap Start to open the rear camera, then point it at the package barcode.</div>'
-    +'<button class="btn btn-primary" id="scanstartbtn" onclick="toggleScan()">Start scanning</button>'
-    +'<button class="btn btn-gold" style="margin-top:8px" onclick="document.getElementById(\'scanphoto\').click()">Take photo of barcode</button>'
-    +'<input type="file" id="scanphoto" accept="image/*" capture="environment" style="display:none" onchange="scanPhoto(this)">'
-    +'<button class="btn btn-primary" style="margin-top:8px" onclick="document.getElementById(\'scanlabel\').click()">Scan full label \u2014 name, hotel & tracking</button>'
+    +'<div id="scanmsg" class="note">Best way: tap <b>Scan package label</b> and take a photo of the whole shipping label \u2014 the app reads the full tracking number and fills in who the package is for.</div>'
+    +'<button class="btn btn-gold" onclick="document.getElementById(\'scanlabel\').click()">📷 Scan package label \u2014 fills in name & tracking #</button>'
     +'<input type="file" id="scanlabel" accept="image/*" capture="environment" style="display:none" onchange="scanFullLabel(this)">'
+    +'<button class="btn btn-primary" id="scanstartbtn" style="margin-top:8px" onclick="toggleScan()">Start scanning</button>'
+    +'<button class="btn" style="margin-top:8px;background:#eef1f6;color:#14264a" onclick="document.getElementById(\'scanphoto\').click()">Take photo of barcode only</button>'
+    +'<input type="file" id="scanphoto" accept="image/*" capture="environment" style="display:none" onchange="scanPhoto(this)">'
     +'<div id="scanmsg2" class="note" style="margin-top:6px"></div>';
   if(!supported){
     h += '<p class="note" style="margin-top:10px">This browser has no built-in barcode reader, so the app will use its backup scanner — live scan, photo, or manual entry all work.</p>';
@@ -762,6 +762,19 @@ function qDecode(urls, done){
       locate:true, locator:{patchSize:"medium"}},
       res=>{ const c=res&&res.codeResult&&res.codeResult.code; if(c){ done(c); } else { qDecode(urls, done); } });
   }catch(e){ qDecode(urls, done); }
+}
+function qDecodeAll(urls, done){
+  const found=[]; const list=(urls||[]).slice();
+  const step=()=>{
+    const u=list.shift(); if(!u){ done(found); return; }
+    try{
+      Quagga.decodeSingle({src:u, numOfWorkers:0,
+        decoder:{readers:["code_128_reader","ean_reader","upc_reader","upc_e_reader","code_39_reader","i2of5_reader"]},
+        locate:true, locator:{patchSize:"medium"}},
+        res=>{ const c=res&&res.codeResult&&res.codeResult.code; if(c&&found.indexOf(c)<0) found.push(c); step(); });
+    }catch(e){ step(); }
+  };
+  step();
 }
 function fallbackTick(){
   if(!scanning||!fallbackLive) return;
@@ -839,17 +852,65 @@ function scanTick(){
     }).catch(run);
   } else run();
 }
+function trackScore(c){
+  if(/^1Z[0-9A-Z]{16}$/.test(c)) return 96;
+  if(/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(c)) return 94;
+  if(/^9\d{21}$/.test(c)) return 100;
+  if(/^9\d{19,20}$/.test(c)) return 92;
+  if(/^\d{12}$/.test(c)) return 88;
+  if(/^\d{15}$/.test(c)) return 86;
+  if(/^\d{20}$/.test(c)) return 84;
+  if(/^\d{22}$/.test(c)) return 82;
+  if(/^TBA\d{9,}$/.test(c)) return 80;
+  if(/^\d{10,11}$/.test(c)) return 62;
+  if(/^\d{13,}$/.test(c)) return 55;
+  if(/^\d{8,}$/.test(c)) return 30+c.length;
+  return 0;
+}
+function trackCandidates(raw){
+  const s=String(raw||"").toUpperCase();
+  const set=new Set(); const add=x=>{ if(x) set.add(x); };
+  const flat=s.replace(/[^0-9A-Z]/g,"");
+  (flat.match(/1Z[0-9A-Z]{16}/g)||[]).forEach(add);
+  (flat.match(/[A-Z]{2}\d{9}[A-Z]{2}/g)||[]).forEach(add);
+  (flat.match(/TBA\d{9,}/g)||[]).forEach(add);
+  (s.match(/\d{8,24}/g)||[]).forEach(add);
+  const spaced=s.replace(/[^0-9 ]/g," ");
+  (spaced.match(/\d+(?: \d+)*/g)||[]).forEach(chain=>{
+    const groups=chain.split(" ").filter(Boolean);
+    for(let i=0;i<groups.length;i++){
+      let d="";
+      for(let j=i;j<groups.length;j++){
+        d+=groups[j];
+        if(d.length>24) break;
+        if(d.length>=8) add(d);
+      }
+    }
+  });
+  if(s.length<80){
+    const runs=s.match(/\d+/g)||[];
+    if(runs.length>1){ const cat=runs.join(""); if(cat.length>=10&&cat.length<=24) add(cat); }
+  }
+  return Array.from(set);
+}
+function pickTracking(cands){
+  let best="", bs=0;
+  (cands||[]).forEach(c=>{ trackCandidates(c).forEach(x=>{ const sc=trackScore(x); if(sc>0&&(sc>bs||(sc===bs&&x.length>best.length))){ bs=sc; best=x; } }); });
+  return bs>0?best:"";
+}
+function carrierFromTrack(t){
+  if(/^1Z/.test(t)) return "UPS";
+  if(/^9\d{19,21}$/.test(t)||/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(t)) return "USPS";
+  if(/^TBA/.test(t)) return "Amazon";
+  if(/^\d{12}$/.test(t)||/^\d{15}$/.test(t)||/^\d{20}$/.test(t)) return "FedEx";
+  return "";
+}
 function parseBarcode(raw){
-  const s=String(raw||"");
-  const segs=s.split(/[\x00-\x1f\x7f]/).map(x=>x.toUpperCase().replace(/[^A-Z0-9]/g,"")).filter(x=>x.length>=4);
-  segs.push(s.toUpperCase().replace(/[^A-Z0-9]/g,""));
-  const runs=[];
-  segs.forEach(x=>{ const m=x.match(/1Z[0-9A-Z]{16}|\d{8,}/g); if(m) m.forEach(r=>runs.push(r)); });
-  let pick=runs.find(r=>/^9\d{19,21}$/.test(r));
-  if(!pick) pick=runs.find(r=>/^1Z[0-9A-Z]{16}$/.test(r));
-  if(!pick) pick=runs.find(r=>/^\d{12,15}$/.test(r));
-  if(!pick&&runs.length) pick=runs.slice().sort((a,b)=>b.length-a.length)[0];
-  return pick||s.toUpperCase().replace(/[^A-Z0-9]/g,"");
+  const p=pickTracking([raw]); if(p) return p;
+  const s=String(raw||"").toUpperCase();
+  const runs=s.match(/\d{6,}/g)||[];
+  if(runs.length) return runs.slice().sort((a,b)=>b.length-a.length)[0];
+  return s.replace(/[^A-Z0-9]/g,"");
 }
 function normTrack(s){ return String(s||"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
 function handleScanLookup(code){
@@ -927,40 +988,56 @@ function parseLabelText(text){
   const out={track:"", carrier:"", recip:"", sender:"", prop:""};
   const T=String(text||"");
   const U=T.toUpperCase();
-  if(/USPS|U\.S\. POSTAGE|POSTAGE PAID/.test(U)) out.carrier="USPS";
+  if(/USPS|U\.S\. POSTAGE|POSTAGE PAID|PARCEL SELECT|GROUND ADVANTAGE/.test(U)) out.carrier="USPS";
   else if(/FEDEX/.test(U)) out.carrier="FedEx";
   else if(/\bUPS\b/.test(U)) out.carrier="UPS";
   else if(/\bDHL\b/.test(U)) out.carrier="DHL";
   else if(/AMAZON/.test(U)) out.carrier="Amazon";
-  const tm=T.match(/\b(\d[\d ]{18,}\d)\b/);
-  if(tm){ const d=tm[1].replace(/\D/g,""); if(/^9\d{19,21}$/.test(d)) out.track=d; }
-  if(!out.track){
-    const tm2=T.match(/\b(\d{12,15})\b/);
-    if(tm2) out.track=tm2[1];
-  }
+  out.track=pickTracking([T]);
+  out.prop=detectPropFromLabel(T);
   const lines=T.split("\n").map(l=>l.replace(/\s+/g," ").trim()).filter(l=>l.length>1);
   const up=lines.map(l=>l.toUpperCase());
-  let si=-1;
+  const tidyName=n=>{
+    let x=String(n||"").replace(/\s*\(GUEST\b[^)]*\)?/gi," ").split("(")[0];
+    x=x.replace(/^(SHIP\s*TO|TO|ATTN|ATTENTION|GUEST|C\/O)[:\s]+/i,"").replace(/\s+(ATTN|C\/O)\s+.*$/i,"");
+    x=dedupeRepeat(x.replace(/\s+/g," ").trim()).replace(/^[\s,-]+|[\s,-]+$/g,"").trim();
+    if(x&&x===x.toUpperCase()&&/[A-Z]/.test(x)) x=x.toLowerCase().replace(/\b([a-z])/g,m=>m.toUpperCase());
+    return x;
+  };
+  // 1) an explicit ATTN / GUEST / C/O name anywhere on the label wins
+  const am=T.match(/(?:ATTN|ATTENTION|GUEST|C\/O)[:\s]+([A-Za-z][A-Za-z .'-]{2,40})/);
+  if(am) out.recip=tidyName(am[1]);
+  // 2) hotel anchor: the name sits on the line(s) just above the hotel / street lines
   const streetRe=/\b\d{2,}\s+[A-Z0-9 .'-]{2,}\b(BLVD|BOULEVARD|AVE|AVENUE|ST|STREET|DR|DRIVE|RD|ROAD|LN|LANE|WAY|CT|COURT|PL|PLACE|TER|TERRACE|PKWY|PARKWAY)\b/;
-  for(let i=0;i<lines.length;i++){
-    if(/TRACKING\s*#|TRACKING NUMBER/.test(up[i])) break;
-    if(streetRe.test(up[i])) si=i;
+  let ai=-1;
+  for(let i=0;i<lines.length;i++){ if(streetRe.test(up[i])){ ai=i; break; } }
+  if(!out.recip&&ai>0){
+    const hotelRe=/LOEWS|PORTOFINO|HARD ROCK|ROYAL PACIFIC|SAPPHIRE|CABANA|STELLA NOVA|TERRA LUNA|HELIOS|SURFSIDE|DOCKSIDE|AVENTURA|UNIVERSAL ORLANDO|HOTEL|RESORT/;
+    const badRe=/TRACKING|POSTAGE|GROUND|EXPRESS|PRIORITY|PARCEL|SERVICE|WEIGHT|BILL|SHIP|FROM|USPS|UPS|FEDEX|DHL|AMAZON|@|\d{5}/;
+    const got=[];
+    for(let i=ai-1;i>=0&&got.length<2&&i>=ai-4;i--){
+      if(hotelRe.test(up[i])) continue;
+      if(badRe.test(up[i])) break;
+      if(lines[i].length<3) continue;
+      got.unshift(lines[i]);
+    }
+    if(got.length) out.recip=tidyName(got.join(" "));
   }
-  if(si>0){
+  // 3) legacy block walk: name lines above the street line + sender lines above those
+  if(ai>0){
     const stop=/USPS|POSTAGE|MAILED FROM|CREATED\s+\d|RDC\s*\d|GROUND ADVANTAGE|PRIORITY MAIL|FIRST-CLASS|FIRST CLASS|PARCEL SELECT|EXPRESS MAIL/;
     const rl=[];
-    for(let i=si-1;i>=0&&rl.length<3;i--){
+    for(let i=ai-1;i>=0&&rl.length<3;i--){
       if(/^[A-Z .'-]+\s+[A-Z]{2}\s+\d{5}(-\d{4})?$/.test(up[i])&&rl.length>0) break;
       if(stop.test(up[i])&&!/GUEST|ATTN/.test(up[i])) break;
       rl.unshift(lines[i]);
     }
-    if(rl.length){
+    if(!out.recip&&rl.length){
       let nm=rl.join(" ").replace(/\s*\(GUEST\b/gi," ").split("(")[0];
       nm=nm.replace(/^(TO|SHIP TO|ATTN|ATTENTION)[:\s]+/i,"").replace(/\s+ATTN\s+.*$/i,"");
-      nm=dedupeRepeat(nm.replace(/\s+/g," ").trim());
-      out.recip=nm.replace(/^[\s,-]+|[\s,-]+$/g,"").trim();
+      out.recip=tidyName(nm);
     }
-    const ri=si-rl.length, sl=[];
+    const ri=ai-rl.length, sl=[];
     for(let i=ri-1;i>=0&&sl.length<2;i--){
       const cl=cleanLine(lines[i]);
       if(!/\d/.test(cl)) continue;
@@ -971,49 +1048,63 @@ function parseLabelText(text){
       sl.unshift(cl);
     }
     out.sender=sl.join(", ").trim();
-  } else {
-    const gi=up.findIndex(l=>/GUEST/.test(l));
-    if(gi>=0) out.recip=dedupeRepeat(lines[gi].split("(")[0].trim());
   }
-  out.prop=detectPropFromLabel(T);
+  if(!out.recip){
+    const gi=up.findIndex(l=>/GUEST/.test(l));
+    if(gi>=0) out.recip=tidyName(lines[gi].split("(")[0]);
+  }
   return out;
 }
 window.scanFullLabel=(input)=>{
   const f=input.files&&input.files[0]; if(!f) return;
   const msg2=document.getElementById("scanmsg2");
   const setM=t=>{ if(msg2) msg2.textContent=t; };
-  setM("Reading label\u2026");
+  setM("Reading label…");
   const url=URL.createObjectURL(f); const img=new Image();
   img.onload=()=>{
     URL.revokeObjectURL(url);
-    const maxW=1600; let w=img.naturalWidth,h=img.naturalHeight; const sc=Math.min(1,maxW/Math.max(w,h));
-    const cv=document.createElement("canvas"); cv.width=Math.round(w*sc); cv.height=Math.round(h*sc);
-    cv.getContext("2d").drawImage(img,0,0,cv.width,cv.height);
-    const dataUrl=cv.toDataURL("image/jpeg",0.9);
-    const cw=Math.round(cv.width*0.65), ch=Math.round(cv.height*0.65);
-    const cc=document.createElement("canvas"); cc.width=cw; cc.height=ch;
-    cc.getContext("2d").drawImage(cv,Math.round((cv.width-cw)/2),Math.round((cv.height-ch)/2),cw,ch,0,0,cw,ch);
-    const finish=(track,carrier,recip,sender,prop)=>{
-      input.value=""; setM("");
-      if(!track&&!recip){ setM("Couldn't read the label \u2014 try again with the whole label in frame."); return; }
-      addPkgForm({track:track, carrier:carrier||undefined, recip:recip, sender:sender, prop:prop||undefined});
-      toast("Label scanned \u2014 check the fields and save");
+    const mk=maxW=>{
+      const sc=Math.min(1,maxW/Math.max(img.naturalWidth,img.naturalHeight));
+      const cv=document.createElement("canvas"); cv.width=Math.round(img.naturalWidth*sc); cv.height=Math.round(img.naturalHeight*sc);
+      cv.getContext("2d").drawImage(img,0,0,cv.width,cv.height); return cv;
     };
-    qDecode([cc.toDataURL("image/jpeg",0.92), dataUrl], code=>{
-      const track=code?parseBarcode(code):"";
+    const crop=(cv,fx,fy,fw,fh)=>{
+      const cc=document.createElement("canvas"); cc.width=Math.round(cv.width*fw); cc.height=Math.round(cv.height*fh);
+      cc.getContext("2d").drawImage(cv,Math.round(cv.width*fx),Math.round(cv.height*fy),cc.width,cc.height,0,0,cc.width,cc.height); return cc;
+    };
+    const big=mk(2400), small=mk(1600);
+    const finishAll=(cands, pl)=>{
+      input.value=""; setM("");
+      const track=pickTracking((cands||[]).concat([pl&&pl.track||""]));
+      const carrier=(pl&&pl.carrier)||carrierFromTrack(track);
+      if(track){
+        const ex=S.pkgs.find(x=>normTrack(x.tracking)===normTrack(track));
+        if(ex){ handleScanLookup(track); toast("Already logged — here's who it's for"); return; }
+      }
+      if(!track&&!(pl&&pl.recip)){ setM("Couldn't read the label — retake the photo with the whole label in frame, in good light."); return; }
+      addPkgForm({track:track, carrier:carrier||undefined, recip:(pl&&pl.recip)||"", sender:(pl&&pl.sender)||"", prop:(pl&&pl.prop)||undefined});
+      toast("Label scanned — name & number filled in. Check and save.");
+    };
+    const runOCR=cands=>{
       loadTesseract(err=>{
-        if(err||!window.Tesseract){ finish(track,"","","",""); return; }
-        setM("Reading text\u2026");
+        if(err||!window.Tesseract){ finishAll(cands, null); return; }
+        setM("Reading the name & address…");
         try{
-          Tesseract.recognize(dataUrl,"eng",{logger:m=>{ if(m&&m.status==="recognizing text"&&msg2) setM("Reading text\u2026 "+Math.round((m.progress||0)*100)+"%"); }})
-          .then(r=>{
-            const pl=parseLabelText((r&&r.data&&r.data.text)||"");
-            finish(track||pl.track||"", pl.carrier||"", pl.recip||"", pl.sender||"", pl.prop||"");
-          })
-          .catch(()=>finish(track,"","","",""));
-        }catch(e){ finish(track,"","","",""); }
+          Tesseract.recognize(small.toDataURL("image/jpeg",0.9),"eng",{logger:m=>{ if(m&&m.status==="recognizing text"&&msg2) setM("Reading the name & address… "+Math.round((m.progress||0)*100)+"%"); }})
+          .then(r=>{ finishAll(cands, parseLabelText((r&&r.data&&r.data.text)||"")); })
+          .catch(()=>finishAll(cands, null));
+        }catch(e){ finishAll(cands, null); }
       });
-    });
+    };
+    if(typeof Quagga==="undefined"){ runOCR([]); return; }
+    setM("Reading barcode…");
+    const variants=[
+      crop(big,0.175,0.175,0.65,0.65).toDataURL("image/jpeg",0.92),
+      big.toDataURL("image/jpeg",0.9),
+      crop(big,0.1,0.3,0.8,0.4).toDataURL("image/jpeg",0.92),
+      small.toDataURL("image/jpeg",0.9)
+    ];
+    qDecodeAll(variants, codes=>{ runOCR(codes||[]); });
   };
   img.onerror=()=>{ URL.revokeObjectURL(url); input.value=""; setM("Couldn't load that photo."); };
   img.src=url;
